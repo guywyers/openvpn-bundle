@@ -8,6 +8,7 @@ An extra feature is the possibility to transform the client profile into an iOS 
 Make sure you have the build prerequisites:
 
 * `GCC`  (compiler)
+* `make` (make system)
 * `autoconf` (build tools)
 * `libssl-dev` (openssl development libraries)
 * `uuid-dev` (uuid library)
