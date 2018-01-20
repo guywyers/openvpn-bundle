@@ -9,12 +9,29 @@
 #include <openssl/evp.h>
 
 #include "helpers.h"
-# include "config-reader.h"
+#include "config-reader.h"
 #include "mob-profile.h"
+#include "simple-xml.h"
+
+
+BIO* GetPKCS12();
+bool PayLoadElements(xml_fragment *xml);
+bool VPNDetails(xml_fragment *xml);
+bool IPV4Dict(xml_fragment *xml);
+bool GenericPayLoadKeys(char *payloadType, char* payloadIdentifier, char* payloadUUID, char * payloadDisplayName,
+	char *payloadDescription, char * payloadOrganization);
+bool CertificatePayload(xml_fragment *xml);
+bool VPNPayload();
+bool VPNParams(xml_fragment *xml);
+bool SSIDList(xml_fragment *xml);
+bool ODRules(xml_fragment *xml);
+bool HandleInlineTag(configIterator *it, char *tag, bool xmlTypeTag);
+bool MakeRule(char *action, char *extraKey, char *extraVal, bool(*valGenerator)(xml_fragment *), xml_fragment *xml);
+
 
 typedef struct {
 	FILE *inFile;
-	FILE *outFile;
+	xml_fragment *xml;
 	profile_info *profile;
 	char *clientCRT;
 	char *clientKey;
@@ -23,55 +40,36 @@ typedef struct {
 
 transformContext *context;
 
-const char indent[] = "   ";
-
-bool GenericPayLoadKeys(char *payloadType, char* payloadIdentifier, char* payloadUUID, char * payloadDisplayName,
-	char *payloadDescription, char * payloadOrganization, char *prefix, bool(*ContentGenerator)(char *));
-bool GlobalPayLoad(char *prefix);
-bool WriteTag(char *tag, bool(*BodyGenerator)(char *), char *prefix);
-bool VPNPayload(char *prefix);
-bool CertificatePayload(char *prefix);
-
-void DictKeyInt(char *key, int value, char *prefix);
-void DictKeyString(char *key, char *value, char *prefix);
-void WriteBool(bool value, char *prefix);
-void WriteString(char *text, char *prefix);
-void WriteKey(char *name, char *prefix); 
-bool PayLoadArray(char *prefix);
-bool PayLoadElements(char * prefix);
-void WriteLineTag(char *tag, char *content, char *prefix);
-bool IPV4Dict(char *prefix);
-bool VPNDetails(char *prefix);
-bool VPNParams(char *prefix);
-bool WriteOVPNTag(configIterator *it, char *tag, bool xmlTypeTag, char *prefix);
-bool HandleInlineTag(configIterator *it, char *tag, bool xmlTypeTag, char *prefix);
-bool ExtractTag(configIterator *it, FILE *dest, bool xmlTypeTag, bool keepLines, char *keyDir);
-bool ODRules(char *prefix);
-bool Rule1(char *prefix);
-bool Rule2(char *prefix);
-bool Rule3(char *prefix);
-bool SSIDList(char * prefix);
-bool ExtractCertificate(char *prefix);
-bool MakePKCS12(char *prefix);
-
-
-
 bool ToMobileProfile(FILE* from, FILE* to, profile_info * profile)
 {
 	context = calloc(1, sizeof(transformContext));
 	context->inFile = from;
-	context->outFile = to;
 	context->profile = profile;
+	context->xml = NewXMLFragment(to);
+	assert_or_exit(context->xml, "Failed to open xml document.\n");
 
-	fprintf(context->outFile, "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n");
-	fprintf(context->outFile, "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList - 1.0.dtd\">\n");
-	fprintf(context->outFile, "<plist version=\"1.0\">\n");
+	fprintf(to, "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n");
+	fprintf(to, "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList - 1.0.dtd\">\n");
+	fprintf(to, "<plist version=\"1.0\">\n");
 
-	bool result = WriteTag("dict", GlobalPayLoad, (char*)indent);
+	bool result = StartTag("dict", context->xml);
 	if (result)
 	{
-		fprintf(context->outFile, "</plist>\n");
+		//First do the generic stuff:
+		assert_or_exit(GenericPayLoadKeys("Configuration", context->profile->Identifier, NULL, context->profile->Name,
+			context->profile->Description, context->profile->Organization), "");
+
+		PushKeyTag("PayloadRemovalDisallowed", context->xml);
+		PushBool(false, context->xml);
+
+		result = PushKeyValueArray("PayloadContent", PayLoadElements, context->xml) &&
+			CloseTag("dict", context->xml);
 	}
+	if (result)
+	{
+		fprintf(to, "</plist>\n");
+	}
+	CloseXMLDocument(context->xml);
 	free(context->clientCRT);
 	free(context->clientKey);
 	free(context->rootCA);
@@ -80,60 +78,43 @@ bool ToMobileProfile(FILE* from, FILE* to, profile_info * profile)
 }
 
 
-bool GlobalPayLoad(char *prefix)
+inline bool PayLoadElements(xml_fragment *xml)
 {
-	//First do the generic stuff:
-	assert_or_exit(GenericPayLoadKeys("Configuration", context->profile->Identifier, NULL, context->profile->Name,
-		context->profile->Description, context->profile->Organization, prefix, PayLoadArray), "");
-
-	WriteKey("PayloadRemovalDisallowed", prefix);
-
-	WriteBool(false, prefix);
-
-	return true;
+	assert_or_exit(PushKeyValueDict("", VPNPayload, xml), "");
+	return PushKeyValueDict("", CertificatePayload, xml);
 }
 
-inline bool PayLoadArray(char *prefix)
-{
-	return WriteTag("array", PayLoadElements, prefix);
-}
-
-inline bool PayLoadElements(char * prefix)
-{
-	assert_or_exit(WriteTag("dict", VPNPayload, prefix), "");
-	return WriteTag("dict", CertificatePayload, prefix);
-}
-
-bool VPNPayload(char *prefix)
+bool VPNPayload(xml_fragment *xml)
 {
 	char id[strlen(context->profile->Identifier) + 5];
 	sprintf(id, "%s.vpn", context->profile->Identifier);
 
 	assert_or_exit(GenericPayLoadKeys("com.apple.vpn.managed", id, NULL, context->profile->VPNOptions->Name,
-		context->profile->VPNOptions->Description, context->profile->Organization, prefix, NULL), "");
-	WriteKey("IPv4", prefix);
-	assert_or_exit(WriteTag("dict", IPV4Dict, prefix), "");
+		context->profile->VPNOptions->Description, context->profile->Organization), "");
 
-	WriteKey("VPN", prefix);
-	assert_or_exit(WriteTag("dict", VPNDetails, prefix), "");
-	WriteKey("VendorConfig", prefix);
-	assert_or_exit(WriteTag("dict", VPNParams, prefix), "");
-	DictKeyString("UserDefinedName", context->profile->VPNOptions->Name, prefix);
-	WriteKey("Proxies", prefix);
-	WriteTag("dict", NULL, prefix);
-	DictKeyString("VPNSubType", "net.openvpn.OpenVPN-Connect.vpnplugin", prefix);
-	DictKeyString("VPNType", "VPN", prefix);
+	assert_or_exit(PushKeyValueDict("IPv4", IPV4Dict, context->xml), "");
 
-	return true;
+	assert_or_exit(PushKeyValueDict("VPN", VPNDetails, context->xml), "");
+
+	PushKeyValueString("UserDefinedName", context->profile->VPNOptions->Name, xml);
+	
+	assert_or_exit(PushKeyValueDict("Proxies", NULL, xml), "");
+
+	PushKeyValueString("VPNSubType", "net.openvpn.OpenVPN-Connect.vpnplugin", xml);
+
+	PushKeyValueString("VPNType", "VPN", xml);
+
+	return PushKeyValueDict("VendorConfig", VPNParams, xml);
 }
 
-inline bool IPV4Dict(char *prefix)
+inline bool IPV4Dict(xml_fragment *xml)
 {
-	DictKeyInt("OverridePrimary", 0, prefix);
+	PushKeyValueInt("OverridePrimary", 0, xml);
 	return true;
 }
 
-bool VPNParams(char *prefix)
+
+bool VPNParams(xml_fragment *xml)
 {
 	configIterator * it = StartConfigIterator(context->inFile);
 
@@ -146,16 +127,16 @@ bool VPNParams(char *prefix)
 			{
 				++t_st;
 				char *local_tag = strndup(t_st, strcspn(t_st, ">"));
-				assert_or_exit(HandleInlineTag(it, local_tag, true, prefix), "");
+				assert_or_exit(HandleInlineTag(it, local_tag, true), "");
 				free(local_tag);
 			}
 			else if (IsInlineTag(it->key))
 			{
-				assert_or_exit(HandleInlineTag(it, it->key, false, prefix), "");
+				assert_or_exit(HandleInlineTag(it, it->key, false), "");
 			}
 			else
 			{
-				DictKeyString(it->key, it->arguments, prefix);
+				PushKeyValueString(it->key, it->arguments, xml);
 			}
 		}
 	}
@@ -164,129 +145,117 @@ bool VPNParams(char *prefix)
 
 }
 
-bool HandleInlineTag(configIterator *it, char *tag, bool xmlTypeTag, char *prefix)
+
+bool HandleInlineTag(configIterator *it, char *tag, bool xmlTypeTag)
 {
-	size_t bufLen = 0;
 	FILE *memFile = NULL;
 	char keyDir[2] = "";
 
+	char *buffer = NULL;
+	size_t bufLen = 0;
+
+	//It's inline, so we'll buffer it first:
+	assert_or_exit((memFile = open_memstream(&(buffer), &bufLen)), "Failed to allocate memory.");
+	assert_or_exit((xmlTypeTag ? ExtractInlineTag(it, memFile, false) : ExtractExternalTag(it, memFile, keyDir, false)), "");
+	fflush(memFile);
+
+	bool keep_buffer = false;
+
 	if (!strcmp(tag, "key"))
 	{
-		assert_or_exit((memFile = open_memstream(&(context->clientKey), &bufLen)), "Failed to allocate memory.");
-		assert_or_exit(ExtractTag(it, memFile, xmlTypeTag, true, keyDir), "");
+		context->clientKey = buffer;
+		keep_buffer = true;
 	}
 	else if (!strcmp(tag, "cert"))
 	{
-		assert_or_exit((memFile = open_memstream(&(context->clientCRT), &bufLen)), "Failed to allocate memory.");
-		assert_or_exit(ExtractTag(it, memFile, xmlTypeTag, true, keyDir), "");
+		context->clientCRT = buffer;
+		keep_buffer = true;
 	}
-	else if (!strcmp(tag, "ca"))
+	else 
 	{
-		//Need it for the pkcs12 and the profile BOTH :
-		assert_or_exit((memFile = open_memstream(&(context->rootCA), &bufLen)), "Failed to allocate memory.");
-		assert_or_exit(ExtractTag(it, memFile, xmlTypeTag, true, keyDir), "");
-		fflush(memFile);
-		fprintf(context->outFile, "%s<%s>", prefix, tag);
-		FILE *bufReader = fmemopen(context->rootCA, bufLen, "r");
-		char *line = NULL;
-		size_t lineLen = 0;
-		while (getline(&line, &lineLen, bufReader) != -1)
+		if (!strcmp(tag, "ca"))
 		{
-			fprintf(context->outFile, "%.*s\\n", (int)strcspn(line, "\r\n"), line);
+			//Need it for the pkcs12 and the profile BOTH :
+			context->rootCA = buffer;
+			keep_buffer = true;
 		}
-		fprintf(context->outFile, "</%s>\n", tag);
-		free(line);
-		fclose(bufReader);
+		PushMultiLineTag(tag, buffer, bufLen, true, context->xml);
+		if (*keyDir)
+			PushKeyValueString("key-direction", (isspace(*keyDir) ? "bidirectional" : keyDir), context->xml);
+
 	}
 	if (memFile)
 	{
 		fclose(memFile);
-		return true;
 	}
-	else
-		return WriteOVPNTag(it, tag, xmlTypeTag, prefix);
-}
-
-bool WriteOVPNTag(configIterator *it, char *tag, bool xmlTypeTag, char *prefix)
-{
-	char keyDir[2] = "";
-
-	fprintf(context->outFile, "%s<%s>", prefix, tag);
-	assert_or_exit(ExtractTag(it, context->outFile, xmlTypeTag, false, keyDir), "");
-	fprintf(context->outFile, "%s</%s>\n", prefix, tag);
-	if (*keyDir)
-		DictKeyString("key-direction", (isspace(*keyDir) ? "bidirectional" : keyDir), prefix);	
+	if (!keep_buffer)
+	{
+		free(buffer);
+	}
 	return true;
 }
 
-inline bool ExtractTag(configIterator *it, FILE *dest, bool xmlTypeTag, bool keepLines, char *keyDir)
-{
-	if (xmlTypeTag)
-	{
-		return ExtractInlineTag(it, dest, false, !keepLines);
-	}
-	else
-	{
-		return ExtractExternalTag(it, dest, keyDir, false, !keepLines);
-	}
-}
 
-bool VPNDetails(char *prefix)
+bool VPNDetails(xml_fragment *xml)
 {
-	DictKeyString("AuthenticationMethod", "Certificate", prefix);
-	DictKeyString("PayloadCertificateUUID", context->profile->CertificateUUID, prefix);
-	DictKeyString("RemoteAddress", "DEFAULT", prefix);
+	PushKeyValueString("AuthenticationMethod", "Certificate", xml);
+	PushKeyValueString("PayloadCertificateUUID", context->profile->CertificateUUID, xml);
+	PushKeyValueString("RemoteAddress", "DEFAULT", xml);
 
 	if (context->profile->VPNOptions->AllowedSSIDs)
 	{
-		DictKeyInt("OnDemandEnabled", 1, prefix);
-		WriteKey("OnDemandRules", prefix);
-		return WriteTag("array", ODRules, prefix);
+		PushKeyValueInt("OnDemandEnabled", 1, xml);
+		return PushKeyValueArray("OnDemandRules", ODRules, xml);
 	}
 	else
 	{
-		DictKeyInt("OnDemandEnabled", 0, prefix);
+		PushKeyValueInt("OnDemandEnabled", 0, xml);
 	}
 	return true;
 
 }
 
-bool ODRules(char *prefix)
+
+bool ODRules(xml_fragment *xml)
 {
-	assert_or_exit(WriteTag("dict", Rule1, prefix), "");
-	assert_or_exit(WriteTag("dict", Rule2, prefix), "");
-	return WriteTag("dict", Rule3, prefix);
+	//Rule1: action = disconnect, except when SSID matches:
+	assert_or_exit(MakeRule("disconnect", "SSIDMatch", NULL, SSIDList, xml),"");
+
+	//Rule2: action = connect when it's a WiFi:
+	assert_or_exit(MakeRule("connect", "InterfaceTypeMatch", "WiFi", NULL, xml), "");
+
+	//Rule3 (default): action = disconnect when nothing else matches:
+	return MakeRule("disconnect", NULL, NULL, NULL, xml);
 }
 
-bool Rule1(char *prefix)
+
+bool MakeRule(char *action, char *extraKey, char *extraVal, bool(*valGenerator)(xml_fragment *), xml_fragment *xml)
 {
-	DictKeyString("Action", "Disconnect", prefix);
-	WriteKey("SSIDMatch", prefix);
-	return WriteTag("array", SSIDList, prefix);
+	StartTag("dict", xml);
+	PushKeyValueString("action", action, xml);
+	if (extraKey && extraVal && *extraVal)
+	{
+		PushKeyValueString(extraKey, extraVal, xml);
+	}
+	else if (extraKey && valGenerator)
+	{
+		PushKeyTag(extraKey, xml);
+		assert_or_exit(valGenerator(xml), "");
+	}
+	return CloseTag("dict", xml);
 }
 
-bool Rule2(char *prefix)
-{
-	DictKeyString("Action", "Connect", prefix);
-	DictKeyString("InterfaceTypeMatch", "WiFi", prefix);
-	return true;
-}
 
-bool Rule3(char *prefix)
-{
-	DictKeyString("Action", "Disconnect", prefix);
-	return true;
-}
 
-bool SSIDList(char * prefix)
+bool SSIDList(xml_fragment *xml)
 {
+	StartTag("array", xml);
 	for (char *s = context->profile->VPNOptions->AllowedSSIDs[0]; s; ++s)
-		WriteString(s, prefix);
-	return true;
+		PushString(s, xml);
+	return CloseTag("array", xml);
 }
 
-
-bool CertificatePayload(char *prefix)
+bool CertificatePayload(xml_fragment *xml)
 {
 	char id[strlen(context->profile->Identifier) + 5];
 	sprintf(id, "%s.credential", context->profile->Identifier);
@@ -295,16 +264,21 @@ bool CertificatePayload(char *prefix)
 	assert_or_exit(context->clientKey, "Client key missing.\n");
 	assert_or_exit(context->rootCA, "CA certificate missing.\n");
 
-	return GenericPayLoadKeys("com.apple.security.pkcs12", id, context->profile->CertificateUUID, context->profile->CertificateName,
-		context->profile->CertificateDescription, context->profile->Organization, prefix, ExtractCertificate);
+	assert_or_exit(GenericPayLoadKeys("com.apple.security.pkcs12", id, context->profile->CertificateUUID, context->profile->CertificateName,
+		context->profile->CertificateDescription, context->profile->Organization),"");
+
+	PushKeyTag("PayloadContent", context->xml);
+	BIO* cert = GetPKCS12();
+	assert_or_exit(cert, "");
+	char *buffer;
+	size_t len = (size_t)(BIO_get_mem_data(cert, &buffer));
+	PushMultiLineTag("data", buffer, len, false, xml);
+	BIO_free_all(cert);
+	return true;
 }
 
-inline bool ExtractCertificate(char *prefix)
-{
-	return WriteTag("data", MakePKCS12, prefix);
-}
 
-bool MakePKCS12(char * prefix)
+BIO* GetPKCS12()
 {
 	EVP_PKEY *pkey = NULL;
 	X509 *cert = NULL;
@@ -366,7 +340,7 @@ bool MakePKCS12(char * prefix)
 	if (result)
 	{
 		b64 = BIO_new(BIO_f_base64());
-		bio = BIO_new_fp(context->outFile, BIO_NOCLOSE);
+		bio = BIO_new(BIO_s_mem());
 		result = (b64 && bio);
 		if (!result)
 			fprintf(stderr, "Error creating convertors.\n");
@@ -379,13 +353,10 @@ bool MakePKCS12(char * prefix)
 		result = (i2d_PKCS12_bio(bio, p12) > 0);
 		if (!result)
 			fprintf(stderr, "Error exporting the PKCS12 certificate.\n");
+		else
+			BIO_flush(bio);
 	}
 
-	if (bio)
-	{
-		BIO_flush(bio);
-		BIO_free_all(bio);
-	}
 	if (p12) PKCS12_free(p12);
 
 	if (cert) X509_free(cert);
@@ -396,86 +367,31 @@ bool MakePKCS12(char * prefix)
 
 	if (pkey) EVP_PKEY_free(pkey);
 
-	return result;
+	return bio;
 }
 
+
 bool GenericPayLoadKeys(char *payloadType, char* payloadIdentifier, char* payloadUUID, char * payloadDisplayName,
-	char *payloadDescription, char * payloadOrganization, char *prefix, bool(*ContentGenerator)(char *))
+	char *payloadDescription, char * payloadOrganization)
 {
-	DictKeyString("PayloadIdentifier", payloadIdentifier, prefix);
-	DictKeyString("PayloadType", payloadType, prefix);
-	DictKeyInt("PayloadVersion", 1, prefix);
-	DictKeyString("PayloadDescription", payloadDescription, prefix);
-	DictKeyString("PayloadDisplayName", payloadDisplayName, prefix);
-	DictKeyString("PayloadOrganization", payloadOrganization, prefix);
-	DictKeyString("PayloadIdentifier", payloadIdentifier, prefix);
+	PushKeyValueString("PayloadIdentifier", payloadIdentifier, context->xml);
+	PushKeyValueString("PayloadType", payloadType, context->xml);
+	PushKeyValueInt("PayloadVersion", 1, context->xml);
+	PushKeyValueString("PayloadDescription", payloadDescription, context->xml);
+	PushKeyValueString("PayloadDisplayName", payloadDisplayName, context->xml);
+	PushKeyValueString("PayloadOrganization", payloadOrganization, context->xml);
+	PushKeyValueString("PayloadIdentifier", payloadIdentifier, context->xml);
 
 	if (payloadUUID)
-		DictKeyString("PayloadUUID", payloadUUID, prefix);
+		PushKeyValueString("PayloadUUID", payloadUUID, context->xml);
 	else
 	{
 		char * UUID = GetUUIDString();
-		DictKeyString("PayloadUUID", UUID, prefix);
+		PushKeyValueString("PayloadUUID", UUID, context->xml);
 		free(UUID);
 	}
 
-	if (ContentGenerator)
-	{
-		WriteKey("PayloadContent", prefix);
-		assert_or_exit((*ContentGenerator)(prefix),"");
-	}
 	return true;
 }
 
-inline void DictKeyInt(char *key, int value, char *prefix)
-{
-	WriteKey(key, prefix);
-	fprintf(context->outFile, "%s<integer>%d</integer>\n", prefix, value);
-}
-
-inline void DictKeyString(char *key, char *value, char *prefix)
-{
-	if (value)
-	{
-		WriteKey(key, prefix);
-		WriteString(value, prefix);
-	}
-}
-
-inline void WriteBool(bool value, char *prefix)
-{
-	fprintf(context->outFile, "%s<%s/>\n", prefix, value ? "true" : "false");
-}
-
-
-inline void WriteString(char *text, char *prefix)
-{
-	WriteLineTag("string", text, prefix);
-}
-
-inline void WriteKey(char *name, char *prefix)
-{
-	WriteLineTag("key", name, prefix);
-}
-
-inline void WriteLineTag(char *tag, char *content, char *prefix)
-{
-	fprintf(context->outFile, "%s<%s>%s</%s>\n", prefix, tag, content, tag);
-}
-
-bool WriteTag(char *tag, bool(*BodyGenerator)(char *), char *prefix)
-{ 
-	if (BodyGenerator)
-	{
-		fprintf(context->outFile, "%s<%s>\n", prefix, tag);
-		char ext_pref[strlen(prefix) + strlen(indent) + 1];
-		sprintf(ext_pref, "%s%s", prefix, indent);
-		assert_or_exit((*BodyGenerator)(ext_pref), "");
-		fprintf(context->outFile, "%s</%s>\n", prefix, tag);
-	}
-	else
-		fprintf(context->outFile, "%s<%s/>\n", prefix, tag);
-
-	return true;
-}
 

@@ -1,5 +1,5 @@
 AC_PREREQ([2.68])
-AC_INIT([openvpn-bundle], 20171228)
+AC_INIT([openvpn-bundle], 20180120)
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AC_CONFIG_HEADERS([config.h])

@@ -11,7 +11,6 @@ const char *tag_keys[] = { "ca", "cert", "dh", "extra-certs", "key", "pkcs12", "
 "tls-crypt", NULL };
 
 void ExtractValues(configIterator *it);
-void PushLine(char *line, FILE* dest, bool noLineWrap);
 
 bool MakeProfileBundle(FILE* from, FILE* to)
 {
@@ -21,13 +20,13 @@ bool MakeProfileBundle(FILE* from, FILE* to)
 	{
 		if (it->key && strpbrk(it->key, "<"))
 		{
-			assert_or_exit(ExtractInlineTag(it, to, true, false), "");
+			assert_or_exit(ExtractInlineTag(it, to, true), "");
 		}
 		else if (it->key && IsInlineTag(it->key))
 		{
 			char keyDir[2] = "";
 			
-			assert_or_exit(ExtractExternalTag(it, to, keyDir, true, false), "");
+			assert_or_exit(ExtractExternalTag(it, to, keyDir, true), "");
 			if (*keyDir)
 			{
 				fprintf(to, "key-direction %s\n", isspace(*keyDir) ? "bidirectional" : keyDir);
@@ -41,7 +40,7 @@ bool MakeProfileBundle(FILE* from, FILE* to)
 }
 
 
-bool ExtractExternalTag(configIterator *it, FILE *dest, char *keyDirection, bool includeTagLines, bool noLineWrap)
+bool ExtractExternalTag(configIterator *it, FILE *dest, char *keyDirection, bool includeTagLines)
 {
 	*keyDirection = 0x0;
 	char file[strlen(it->arguments) + 1];
@@ -70,7 +69,7 @@ bool ExtractExternalTag(configIterator *it, FILE *dest, char *keyDirection, bool
 	size_t len = 0;
 	while (getline(&line, &len, tagFile) != -1)
 	{
-		PushLine(line, dest, noLineWrap);
+		fputs(line, dest);
 	}
 	if (includeTagLines)
 		fprintf(dest, "</%s>\n", it->key);
@@ -81,7 +80,7 @@ bool ExtractExternalTag(configIterator *it, FILE *dest, char *keyDirection, bool
 
 }
 
-bool ExtractInlineTag(configIterator *it, FILE *dest, bool includeTagLines, bool noLineWrap)
+bool ExtractInlineTag(configIterator *it, FILE *dest, bool includeTagLines)
 {
 	char *s = strchr(it->fullLine, '<');
 	char *e = strchr(it->fullLine, '>');
@@ -94,7 +93,7 @@ bool ExtractInlineTag(configIterator *it, FILE *dest, bool includeTagLines, bool
 	tag[tagLen] = 0;
 
 	if (includeTagLines)
-		PushLine(it->fullLine, dest, noLineWrap);
+		fputs(it->fullLine, dest);
 
 	for (NextLine(it); !IsEOF(it); NextLine(it))
 	{
@@ -102,7 +101,7 @@ bool ExtractInlineTag(configIterator *it, FILE *dest, bool includeTagLines, bool
 		e = strchr(it->fullLine, '>');
 
 		if (!s && !e)
-			PushLine(it->fullLine, dest, noLineWrap);
+			fputs(it->fullLine, dest);
 		else
 		{
 			//There is a tag on this line, it's either our closing tag or it's a problem:
@@ -110,7 +109,7 @@ bool ExtractInlineTag(configIterator *it, FILE *dest, bool includeTagLines, bool
 				"Incorrectly formatted tag found in input file '%s'\n", it->fullLine);
 
 			if (includeTagLines)
-				PushLine(it->fullLine, dest, noLineWrap);
+				fputs(it->fullLine, dest);
 
 			return true;
 		}
@@ -120,15 +119,6 @@ bool ExtractInlineTag(configIterator *it, FILE *dest, bool includeTagLines, bool
 	return FailMessage("Reached end of file before finding closing tag for <%s>\n", tag);
 }
 
-void PushLine(char *line, FILE* dest, bool noLineWrap)
-{
-	if (noLineWrap)
-	{
-		fprintf(dest, "%.*s\\n", (int)strcspn(line, "\r\n"), line);
-	}
-	else
-		fputs(line, dest);
-}
 
 bool IsInlineTag(char *key)
 {

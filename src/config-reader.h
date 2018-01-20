@@ -21,9 +21,9 @@ extern bool IsInlineTag(char *key);
 
 extern bool MakeProfileBundle(FILE* from, FILE* to);
 
-extern bool ExtractInlineTag(configIterator *it, FILE *dest, bool includeTagLines, bool noLineWrap);
+extern bool ExtractInlineTag(configIterator *it, FILE *dest, bool includeTagLines);
 
-extern bool ExtractExternalTag(configIterator *it, FILE *dest, char *keyDirection, bool includeTagLines, bool noLineWrap);
+extern bool ExtractExternalTag(configIterator *it, FILE *dest, char *keyDirection, bool includeTagLines);
 
 extern bool NextLine(configIterator *it);
 
